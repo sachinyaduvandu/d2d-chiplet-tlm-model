@@ -8,140 +8,123 @@
 
 namespace d2d_model {
 
-enum class ArbPolicy {
-    ROUND_ROBIN,
-    STRICT_PRIORITY
-};
-
-class D2DBridge : public sc_core::sc_module {
+class D2DRouterBridge : public sc_core::sc_module {
 public:
-    tlm_utils::simple_target_socket<D2DBridge> target_socket_cpu;
-    tlm_utils::simple_target_socket<D2DBridge> target_socket_dma;
-    tlm_utils::simple_initiator_socket<D2DBridge> initiator_socket;
+    tlm_utils::simple_target_socket<D2DRouterBridge> target_socket_cpu;
+    tlm_utils::simple_initiator_socket<D2DRouterBridge> initiator_socket_mem; // Chiplet 1
+    tlm_utils::simple_initiator_socket<D2DRouterBridge> initiator_socket_npu; // Chiplet 2
 
-    D2DBridge(sc_core::sc_module_name name, 
-              uint32_t ingress_depth_per_queue = 8,
-              uint32_t initial_downstream_credits = 16,
-              double link_bandwidth_gbps = 32.0,
-              sc_core::sc_time link_delay = sc_core::sc_time(5, sc_core::SC_NS),
-              ArbPolicy policy = ArbPolicy::ROUND_ROBIN)
+    D2DRouterBridge(sc_core::sc_module_name name,
+                    uint32_t ingress_depth = 16,
+                    uint32_t initial_credits = 8,
+                    double mem_link_bw_gbps = 64.0,
+                    double npu_link_bw_gbps = 16.0,
+                    sc_core::sc_time link_delay = sc_core::sc_time(5, sc_core::SC_NS))
         : sc_core::sc_module(name),
           target_socket_cpu("target_socket_cpu"),
-          target_socket_dma("target_socket_dma"),
-          initiator_socket("initiator_socket"),
-          m_capacity(ingress_depth_per_queue),
-          m_downstream_credits(initial_downstream_credits),
-          m_link_bandwidth_gbps(link_bandwidth_gbps),
-          m_link_delay(link_delay),
-          m_policy(policy),
-          m_rr_turn(0)
+          initiator_socket_mem("initiator_socket_mem"),
+          initiator_socket_npu("initiator_socket_npu"),
+          m_capacity(ingress_depth),
+          m_mem_credits(initial_credits),
+          m_npu_credits(initial_credits),
+          m_mem_bw(mem_link_bw_gbps),
+          m_npu_bw(npu_link_bw_gbps),
+          m_link_delay(link_delay)
     {
-        target_socket_cpu.register_nb_transport_fw(this, &D2DBridge::nb_transport_fw_cpu);
-        target_socket_dma.register_nb_transport_fw(this, &D2DBridge::nb_transport_fw_dma);
-        initiator_socket.register_nb_transport_bw(this, &D2DBridge::nb_transport_bw);
-        SC_THREAD(arbitration_thread);
+        target_socket_cpu.register_nb_transport_fw(this, &D2DRouterBridge::nb_transport_fw);
+        initiator_socket_mem.register_nb_transport_bw(this, &D2DRouterBridge::nb_transport_bw_mem);
+        initiator_socket_npu.register_nb_transport_bw(this, &D2DRouterBridge::nb_transport_bw_npu);
+        
+        SC_THREAD(router_thread);
     }
 
-    tlm::tlm_sync_enum nb_transport_fw_cpu(tlm::tlm_generic_payload& trans,
-                                           tlm::tlm_phase& phase,
-                                           sc_core::sc_time& delay) {
-        if (m_hi_queue.size() >= m_capacity) {
-            trans.set_response_status(tlm::TLM_GENERIC_ERROR_RESPONSE);
-            return tlm::TLM_COMPLETED;
-        }
-        m_hi_queue.push(&trans);
-        m_item_event.notify(delay);
-        trans.set_response_status(tlm::TLM_OK_RESPONSE);
-        return tlm::TLM_ACCEPTED;
-    }
-
-    tlm::tlm_sync_enum nb_transport_fw_dma(tlm::tlm_generic_payload& trans,
-                                           tlm::tlm_phase& phase,
-                                           sc_core::sc_time& delay) {
-        if (m_lo_queue.size() >= m_capacity) {
-            trans.set_response_status(tlm::TLM_GENERIC_ERROR_RESPONSE);
-            return tlm::TLM_COMPLETED;
-        }
-        m_lo_queue.push(&trans);
-        m_item_event.notify(delay);
-        trans.set_response_status(tlm::TLM_OK_RESPONSE);
-        return tlm::TLM_ACCEPTED;
-    }
-
-    tlm::tlm_sync_enum nb_transport_bw(tlm::tlm_generic_payload& trans,
+    tlm::tlm_sync_enum nb_transport_fw(tlm::tlm_generic_payload& trans,
                                        tlm::tlm_phase& phase,
                                        sc_core::sc_time& delay) {
+        if (m_queue.size() >= m_capacity) {
+            trans.set_response_status(tlm::TLM_GENERIC_ERROR_RESPONSE);
+            return tlm::TLM_COMPLETED;
+        }
+
+        m_queue.push(&trans);
+        m_item_event.notify(delay);
+        trans.set_response_status(tlm::TLM_OK_RESPONSE);
+        return tlm::TLM_ACCEPTED;
+    }
+
+    tlm::tlm_sync_enum nb_transport_bw_mem(tlm::tlm_generic_payload& trans,
+                                           tlm::tlm_phase& phase,
+                                           sc_core::sc_time& delay) {
         if (phase == CREDIT_RETURN) {
-            m_downstream_credits++;
+            m_mem_credits++;
             m_credit_event.notify(delay);
             return tlm::TLM_COMPLETED;
         }
         return tlm::TLM_ACCEPTED;
     }
 
-    void arbitration_thread() {
+    tlm::tlm_sync_enum nb_transport_bw_npu(tlm::tlm_generic_payload& trans,
+                                           tlm::tlm_phase& phase,
+                                           sc_core::sc_time& delay) {
+        if (phase == CREDIT_RETURN) {
+            m_npu_credits++;
+            m_credit_event.notify(delay);
+            return tlm::TLM_COMPLETED;
+        }
+        return tlm::TLM_ACCEPTED;
+    }
+
+    void router_thread() {
         while (true) {
-            if (m_hi_queue.empty() && m_lo_queue.empty()) {
+            if (m_queue.empty()) {
                 wait(m_item_event);
             }
 
-            while (m_downstream_credits == 0) {
-                wait(m_credit_event);
-            }
+            if (!m_queue.empty()) {
+                tlm::tlm_generic_payload* trans = m_queue.front();
+                uint64_t addr = trans->get_address();
 
-            tlm::tlm_generic_payload* selected_trans = nullptr;
+                // Memory Map Routing Logic:
+                // Addr < 0x8000 -> Chiplet 1 (Memory)
+                // Addr >= 0x8000 -> Chiplet 2 (NPU)
+                bool route_to_mem = (addr < 0x8000);
 
-            if (m_policy == ArbPolicy::STRICT_PRIORITY) {
-                if (!m_hi_queue.empty()) {
-                    selected_trans = m_hi_queue.front();
-                    m_hi_queue.pop();
-                } else if (!m_lo_queue.empty()) {
-                    selected_trans = m_lo_queue.front();
-                    m_lo_queue.pop();
+                if (route_to_mem) {
+                    while (m_mem_credits == 0) wait(m_credit_event);
+                    m_queue.pop();
+                    m_mem_credits--;
+
+                    double ser_ns = static_cast<double>(trans->get_data_length()) / m_mem_bw;
+                    wait(sc_core::sc_time(ser_ns, sc_core::SC_NS));
+
+                    sc_core::sc_time delay = m_link_delay;
+                    tlm::tlm_phase phase = tlm::BEGIN_REQ;
+                    initiator_socket_mem->nb_transport_fw(*trans, phase, delay);
+                } else {
+                    while (m_npu_credits == 0) wait(m_credit_event);
+                    m_queue.pop();
+                    m_npu_credits--;
+
+                    double ser_ns = static_cast<double>(trans->get_data_length()) / m_npu_bw;
+                    wait(sc_core::sc_time(ser_ns, sc_core::SC_NS));
+
+                    sc_core::sc_time delay = m_link_delay;
+                    tlm::tlm_phase phase = tlm::BEGIN_REQ;
+                    initiator_socket_npu->nb_transport_fw(*trans, phase, delay);
                 }
-            } else { // ROUND_ROBIN
-                if (!m_hi_queue.empty() && !m_lo_queue.empty()) {
-                    if (m_rr_turn == 0) {
-                        selected_trans = m_hi_queue.front();
-                        m_hi_queue.pop();
-                        m_rr_turn = 1;
-                    } else {
-                        selected_trans = m_lo_queue.front();
-                        m_lo_queue.pop();
-                        m_rr_turn = 0;
-                    }
-                } else if (!m_hi_queue.empty()) {
-                    selected_trans = m_hi_queue.front();
-                    m_hi_queue.pop();
-                } else if (!m_lo_queue.empty()) {
-                    selected_trans = m_lo_queue.front();
-                    m_lo_queue.pop();
-                }
-            }
-
-            if (selected_trans) {
-                m_downstream_credits--;
-
-                double ser_ns = static_cast<double>(selected_trans->get_data_length()) / m_link_bandwidth_gbps;
-                wait(sc_core::sc_time(ser_ns, sc_core::SC_NS));
-
-                sc_core::sc_time delay = m_link_delay;
-                tlm::tlm_phase phase = tlm::BEGIN_REQ;
-                initiator_socket->nb_transport_fw(*selected_trans, phase, delay);
             }
         }
     }
 
 private:
     uint32_t m_capacity;
-    uint32_t m_downstream_credits;
-    double m_link_bandwidth_gbps;
+    uint32_t m_mem_credits;
+    uint32_t m_npu_credits;
+    double m_mem_bw;
+    double m_npu_bw;
     sc_core::sc_time m_link_delay;
-    ArbPolicy m_policy;
-    uint32_t m_rr_turn;
 
-    std::queue<tlm::tlm_generic_payload*> m_hi_queue;
-    std::queue<tlm::tlm_generic_payload*> m_lo_queue;
+    std::queue<tlm::tlm_generic_payload*> m_queue;
     sc_core::sc_event m_item_event;
     sc_core::sc_event m_credit_event;
 };

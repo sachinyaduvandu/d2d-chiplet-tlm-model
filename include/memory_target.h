@@ -7,20 +7,22 @@
 
 namespace d2d_model {
 
-class MemoryTarget : public sc_core::sc_module {
+class ChipletTarget : public sc_core::sc_module {
 public:
-    tlm_utils::simple_target_socket<MemoryTarget> target_socket;
+    tlm_utils::simple_target_socket<ChipletTarget> target_socket;
 
-    MemoryTarget(sc_core::sc_module_name name, 
-                 uint32_t buffer_depth = 16,
-                 sc_core::sc_time service_delay = sc_core::sc_time(2, sc_core::SC_NS))
+    ChipletTarget(sc_core::sc_module_name name, 
+                  uint32_t chiplet_id,
+                  uint32_t buffer_depth = 8,
+                  sc_core::sc_time service_delay = sc_core::sc_time(2, sc_core::SC_NS))
         : sc_core::sc_module(name), 
           target_socket("target_socket"),
+          m_chiplet_id(chiplet_id),
           m_capacity(buffer_depth),
           m_free_slots(buffer_depth),
           m_service_delay(service_delay)
     {
-        target_socket.register_nb_transport_fw(this, &MemoryTarget::nb_transport_fw);
+        target_socket.register_nb_transport_fw(this, &ChipletTarget::nb_transport_fw);
         SC_THREAD(service_pipeline);
     }
 
@@ -56,9 +58,9 @@ public:
                 trans->get_extension(ext);
                 if (ext) {
                     sc_core::sc_time total_lat = sc_core::sc_time_stamp() - ext->inject_time;
-                    StreamStats::get_instance().record_packet(ext->src_stream_id, 
-                                                              total_lat.to_double() / 1000.0, 
-                                                              ext->payload_bytes);
+                    TopologyStats::get_instance().record_delivery(m_chiplet_id, 
+                                                                  total_lat.to_double() / 1000.0, 
+                                                                  ext->payload_bytes);
                 }
 
                 m_free_slots++;
@@ -72,6 +74,7 @@ public:
     }
 
 private:
+    uint32_t m_chiplet_id;
     uint32_t m_capacity;
     uint32_t m_free_slots;
     sc_core::sc_time m_service_delay;

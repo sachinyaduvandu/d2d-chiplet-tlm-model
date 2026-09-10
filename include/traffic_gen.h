@@ -12,14 +12,12 @@ public:
 
     TrafficGen(sc_core::sc_module_name name, 
                uint32_t stream_id, 
-               StreamPriority priority,
                uint32_t num_packets, 
                sc_core::sc_time injection_interval,
                uint32_t packet_size_bytes = 64)
         : sc_core::sc_module(name), 
           initiator_socket("initiator_socket"),
           m_stream_id(stream_id),
-          m_priority(priority),
           m_num_packets(num_packets),
           m_injection_interval(injection_interval),
           m_packet_size_bytes(packet_size_bytes) {
@@ -34,13 +32,18 @@ public:
             PacketExtension* ext = new PacketExtension();
             ext->packet_id = i;
             ext->src_stream_id = m_stream_id;
-            ext->priority = m_priority;
             ext->inject_time = sc_core::sc_time_stamp();
             ext->payload_bytes = m_packet_size_bytes;
 
+            // Interleave addresses:
+            // Even packets: 0x1000 (Memory Chiplet 1)
+            // Odd packets:  0x9000 (NPU Chiplet 2)
+            uint64_t target_address = (i % 2 == 0) ? (0x1000 + i * 64) : (0x9000 + i * 64);
+            ext->dest_chiplet_id = (i % 2 == 0) ? 1 : 2;
+
             trans->set_extension(ext);
             trans->set_command(tlm::TLM_WRITE_COMMAND);
-            trans->set_address(0x1000 + (i * m_packet_size_bytes));
+            trans->set_address(target_address);
             trans->set_data_length(m_packet_size_bytes);
 
             sc_core::sc_time delay = sc_core::SC_ZERO_TIME;
@@ -58,7 +61,6 @@ public:
 
 private:
     uint32_t m_stream_id;
-    StreamPriority m_priority;
     uint32_t m_num_packets;
     sc_core::sc_time m_injection_interval;
     uint32_t m_packet_size_bytes;
