@@ -1,16 +1,17 @@
 #!/bin/bash
 cd ~/d2d_tlm_model/build
 
-# Clean previous results
 rm -f results.csv
-echo "buffer_capacity,injection_interval_ns,num_packets,stall_count,sim_time_ns" > results.csv
+echo "buffer_capacity,link_bandwidth_gbps,packet_size_bytes,injection_interval_ns,offered_load,achieved_bw_gbps,avg_latency_ns,p95_latency_ns,stall_count,link_util_pct" > results.csv
 
-echo "Starting Parameter Sweep..."
-for buf in 2 8; do
-    for interval in 4 6 8 10 12 16 20; do
-        echo "Running: Buffer Depth = $buf, Injection Interval = ${interval}ns"
-        ./d2d_sim 25 $interval $buf > /dev/null 2>&1
+echo "Starting Architectural Design-Space Exploration..."
+
+# Experiment: Sweep Offered Load across Bandwidth (16 GB/s vs 64 GB/s) with 128B Packets
+for bw in 16.0 64.0; do
+    for interval in 2.0 3.0 4.0 6.0 8.0 12.0 16.0 20.0; do
+        echo "Running: BW = ${bw} GB/s, Interval = ${interval} ns, Buffer = 8"
+        ./d2d_sim 50 $interval 8 $bw 128 > /dev/null 2>&1
     done
 done
 
-echo "Sweep complete! Results saved in ~/d2d_tlm_model/build/results.csv"
+echo "Exploration Complete! Results saved to build/results.csv"
