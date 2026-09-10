@@ -57,7 +57,7 @@ struct PacketExtension : public tlm::tlm_extension<PacketExtension> {
 
 DECLARE_EXTENDED_PHASE(CREDIT_RETURN);
 
-// Unified System Performance & Fairness Metrics
+// Unified System Performance & Fairness Metrics Collector
 class MetricsCollector {
 public:
     static MetricsCollector& get_instance() {
@@ -73,6 +73,8 @@ public:
     }
 
     void record_starvation() { credit_starvation_events++; }
+    
+    // Mean sampled occupancy across arbitration loop evaluations
     void record_queue_sample(size_t sz) {
         queue_occupancy_samples.push_back(sz);
         if (sz > max_queue_depth) max_queue_depth = sz;
@@ -99,11 +101,14 @@ public:
         return std::accumulate(all_latencies.begin(), all_latencies.end(), 0.0) / all_latencies.size();
     }
 
+    // Precise 0-based P95 calculation
     double get_p95_latency() {
         if (all_latencies.empty()) return 0.0;
         std::vector<double> s = all_latencies;
         std::sort(s.begin(), s.end());
-        return s[static_cast<size_t>(0.95 * s.size())];
+        size_t idx = static_cast<size_t>(std::ceil(0.95 * s.size())) - 1;
+        if (idx >= s.size()) idx = s.size() - 1;
+        return s[idx];
     }
 
     uint64_t get_stream_bytes(uint32_t stream_id) { return stream_bytes[stream_id]; }
@@ -113,7 +118,8 @@ public:
         return total;
     }
 
-    double get_avg_queue_occupancy() {
+    // Mean sampled queue occupancy
+    double get_mean_sampled_queue_occupancy() {
         if (queue_occupancy_samples.empty()) return 0.0;
         double sum = std::accumulate(queue_occupancy_samples.begin(), queue_occupancy_samples.end(), 0.0);
         return sum / queue_occupancy_samples.size();
@@ -122,7 +128,7 @@ public:
     size_t get_max_queue_occupancy() const { return max_queue_depth; }
     uint64_t get_starvation_events() const { return credit_starvation_events; }
 
-    // Jain's Fairness Index across stream throughputs
+    // Jain's Fairness Index across delivered stream volume in finite workload window
     double get_jains_fairness() {
         if (stream_bytes.size() < 2) return 1.0;
         double sum = 0.0;
