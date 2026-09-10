@@ -12,8 +12,8 @@ public:
     tlm_utils::simple_target_socket<MemoryTarget> target_socket;
 
     MemoryTarget(sc_core::sc_module_name name, 
-                 uint32_t buffer_depth = 4,
-                 sc_core::sc_time service_delay = sc_core::sc_time(20, sc_core::SC_NS))
+                 uint32_t buffer_depth = 16,
+                 sc_core::sc_time service_delay = sc_core::sc_time(2, sc_core::SC_NS))
         : sc_core::sc_module(name), 
           target_socket("target_socket"),
           m_capacity(buffer_depth),
@@ -34,7 +34,7 @@ public:
 
         m_free_slots--;
         m_queue.push(&trans);
-        m_packet_received_event.notify(delay);
+        m_packet_event.notify(delay);
 
         trans.set_response_status(tlm::TLM_OK_RESPONSE);
         return tlm::TLM_ACCEPTED;
@@ -43,7 +43,7 @@ public:
     void service_pipeline() {
         while (true) {
             if (m_queue.empty()) {
-                wait(m_packet_received_event);
+                wait(m_packet_event);
             }
 
             if (!m_queue.empty()) {
@@ -56,11 +56,11 @@ public:
                 trans->get_extension(ext);
                 if (ext) {
                     sc_core::sc_time total_lat = sc_core::sc_time_stamp() - ext->inject_time;
-                    PerformanceStats::get_instance().record_latency(total_lat.to_double() / 1000.0);
-                    PerformanceStats::get_instance().add_bytes_received(ext->payload_bytes);
+                    StreamStats::get_instance().record_packet(ext->src_stream_id, 
+                                                              total_lat.to_double() / 1000.0, 
+                                                              ext->payload_bytes);
                 }
 
-                // Explicit credit return
                 m_free_slots++;
                 tlm::tlm_phase credit_phase = CREDIT_RETURN;
                 sc_core::sc_time bw_delay = sc_core::SC_ZERO_TIME;
@@ -76,7 +76,7 @@ private:
     uint32_t m_free_slots;
     sc_core::sc_time m_service_delay;
     std::queue<tlm::tlm_generic_payload*> m_queue;
-    sc_core::sc_event m_packet_received_event;
+    sc_core::sc_event m_packet_event;
 };
 
 } // namespace d2d_model
