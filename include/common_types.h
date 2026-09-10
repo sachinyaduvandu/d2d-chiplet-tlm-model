@@ -57,7 +57,6 @@ struct PacketExtension : public tlm::tlm_extension<PacketExtension> {
 
 DECLARE_EXTENDED_PHASE(CREDIT_RETURN);
 
-// Unified System Performance & Fairness Metrics Collector
 class MetricsCollector {
 public:
     static MetricsCollector& get_instance() {
@@ -66,15 +65,20 @@ public:
     }
 
     void record_delivery(uint32_t stream_id, uint32_t dest_id, double latency_ns, uint64_t bytes) {
+        double now_ns = sc_core::sc_time_stamp().to_seconds() * 1e9;
         stream_latencies[stream_id].push_back(latency_ns);
         all_latencies.push_back(latency_ns);
         stream_bytes[stream_id] += bytes;
         dest_bytes[dest_id] += bytes;
+
+        if (stream_first_rx.find(stream_id) == stream_first_rx.end()) {
+            stream_first_rx[stream_id] = now_ns;
+        }
+        stream_last_rx[stream_id] = now_ns;
     }
 
     void record_starvation() { credit_starvation_events++; }
     
-    // Mean sampled occupancy across arbitration loop evaluations
     void record_queue_sample(size_t sz) {
         queue_occupancy_samples.push_back(sz);
         if (sz > max_queue_depth) max_queue_depth = sz;
@@ -85,6 +89,8 @@ public:
         all_latencies.clear();
         stream_bytes.clear();
         dest_bytes.clear();
+        stream_first_rx.clear();
+        stream_last_rx.clear();
         queue_occupancy_samples.clear();
         max_queue_depth = 0;
         credit_starvation_events = 0;
@@ -101,7 +107,6 @@ public:
         return std::accumulate(all_latencies.begin(), all_latencies.end(), 0.0) / all_latencies.size();
     }
 
-    // Precise 0-based P95 calculation
     double get_p95_latency() {
         if (all_latencies.empty()) return 0.0;
         std::vector<double> s = all_latencies;
@@ -111,14 +116,13 @@ public:
         return s[idx];
     }
 
-    uint64_t get_stream_bytes(uint32_t stream_id) { return stream_bytes[stream_id]; }
+    uint64_t get_dest_bytes(uint32_t dest_id) { return dest_bytes[dest_id]; }
     uint64_t get_total_bytes() {
         uint64_t total = 0;
         for (auto& kv : stream_bytes) total += kv.second;
         return total;
     }
 
-    // Mean sampled queue occupancy
     double get_mean_sampled_queue_occupancy() {
         if (queue_occupancy_samples.empty()) return 0.0;
         double sum = std::accumulate(queue_occupancy_samples.begin(), queue_occupancy_samples.end(), 0.0);
@@ -128,18 +132,25 @@ public:
     size_t get_max_queue_occupancy() const { return max_queue_depth; }
     uint64_t get_starvation_events() const { return credit_starvation_events; }
 
-    // Jain's Fairness Index across delivered stream volume in finite workload window
-    double get_jains_fairness() {
+    // Jain's Fairness Index across per-stream active throughput (GB/s)
+    double get_jains_throughput_fairness() {
         if (stream_bytes.size() < 2) return 1.0;
+        std::vector<double> rates;
+        for (auto& kv : stream_bytes) {
+            uint32_t sid = kv.first;
+            double dt = stream_last_rx[sid] - stream_first_rx[sid];
+            if (dt <= 0.0) dt = 1.0;
+            rates.push_back(static_cast<double>(kv.second) / dt); // GB/s rate
+        }
+
         double sum = 0.0;
         double sum_sq = 0.0;
-        for (auto& kv : stream_bytes) {
-            double x = static_cast<double>(kv.second);
-            sum += x;
-            sum_sq += (x * x);
+        for (double r : rates) {
+            sum += r;
+            sum_sq += (r * r);
         }
         if (sum_sq == 0.0) return 1.0;
-        return (sum * sum) / (stream_bytes.size() * sum_sq);
+        return (sum * sum) / (rates.size() * sum_sq);
     }
 
 private:
@@ -147,6 +158,8 @@ private:
     std::vector<double> all_latencies;
     std::map<uint32_t, uint64_t> stream_bytes;
     std::map<uint32_t, uint64_t> dest_bytes;
+    std::map<uint32_t, double> stream_first_rx;
+    std::map<uint32_t, double> stream_last_rx;
     std::vector<size_t> queue_occupancy_samples;
     size_t max_queue_depth = 0;
     uint64_t credit_starvation_events = 0;
