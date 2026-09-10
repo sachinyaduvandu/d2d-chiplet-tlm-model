@@ -2,6 +2,7 @@
 #include <systemc>
 #include <tlm>
 #include <tlm_utils/simple_initiator_socket.h>
+#include <cstdlib>
 #include "common_types.h"
 
 namespace d2d_model {
@@ -15,7 +16,7 @@ public:
                StreamPriority priority,
                uint32_t num_packets, 
                sc_core::sc_time injection_interval,
-               double memory_target_ratio = 0.5,
+               double memory_target_ratio = 0.70,
                uint32_t packet_size_bytes = 64)
         : sc_core::sc_module(name), 
           initiator_socket("initiator_socket"),
@@ -40,8 +41,10 @@ public:
             ext->inject_time = sc_core::sc_time_stamp();
             ext->payload_bytes = m_packet_size_bytes;
 
-            // Route between Memory (< 0x8000) and NPU (>= 0x8000)
-            bool to_mem = ((double)rand() / RAND_MAX) < m_mem_ratio;
+            // Address decode: < 0x8000 (Memory), >= 0x8000 (NPU)
+            // Uses configurable m_mem_ratio (e.g. 0.70 for 70% Memory / 30% NPU)
+            double r = static_cast<double>(rand()) / static_cast<double>(RAND_MAX);
+            bool to_mem = (r < m_mem_ratio);
             uint64_t addr = to_mem ? (0x1000 + (i % 64) * 64) : (0x9000 + (i % 64) * 64);
             ext->dest_chiplet_id = to_mem ? 1 : 2;
 
