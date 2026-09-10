@@ -3,25 +3,51 @@ import matplotlib.pyplot as plt
 
 df = pd.read_csv("build/arbitration_results.csv")
 
-fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(12, 4.5))
+fig, axs = plt.subplots(2, 2, figsize=(14, 10))
 
-# 1. Latency Comparison
-x = df["policy"]
-ax1.bar(x, df["cpu_avg_latency_ns"], width=0.35, label="CPU (Latency-Critical)", color="#1f77b4", align="center")
-ax1.bar(x, df["dma_avg_latency_ns"], width=0.35, label="DMA (Bulk)", color="#ff7f0e", align="edge")
-ax1.set_title("Average Latency under Cross-Traffic Contention")
-ax1.set_ylabel("Latency (ns)")
-ax1.legend()
-ax1.grid(axis='y', linestyle='--', alpha=0.5)
+policies = df["policy"].unique()
+colors = {"FIFO": "#d62728", "RR": "#1f77b4", "PRIO": "#2ca02c"}
 
-# 2. Bandwidth Distribution
-ax2.bar(x, df["cpu_bw_gbps"], width=0.35, label="CPU Throughput", color="#1f77b4", align="center")
-ax2.bar(x, df["dma_bw_gbps"], width=0.35, label="DMA Throughput", color="#ff7f0e", align="edge")
-ax2.set_title("Achieved Bandwidth Distribution")
-ax2.set_ylabel("Throughput (GB/s)")
-ax2.legend()
-ax2.grid(axis='y', linestyle='--', alpha=0.5)
+# 1. CPU Latency vs Load
+for pol in policies:
+    sub = df[df["policy"] == pol].sort_values("offered_interval_ns")
+    axs[0, 0].plot(1.0 / sub["offered_interval_ns"], sub["cpu_lat_ns"], marker='o', label=pol, color=colors[pol])
+axs[0, 0].set_title("CPU Latency vs. Offered Load")
+axs[0, 0].set_xlabel("Offered Load (Packets / ns)")
+axs[0, 0].set_ylabel("Latency (ns)")
+axs[0, 0].grid(True, linestyle="--", alpha=0.5)
+axs[0, 0].legend()
+
+# 2. Total Achieved Throughput
+for pol in policies:
+    sub = df[df["policy"] == pol].sort_values("offered_interval_ns")
+    axs[0, 1].plot(1.0 / sub["offered_interval_ns"], sub["throughput_gbps"], marker='s', label=pol, color=colors[pol])
+axs[0, 1].set_title("Throughput vs. Offered Load (HOL Impact)")
+axs[0, 1].set_xlabel("Offered Load (Packets / ns)")
+axs[0, 1].set_ylabel("Throughput (GB/s)")
+axs[0, 1].grid(True, linestyle="--", alpha=0.5)
+axs[0, 1].legend()
+
+# 3. P95 Tail Latency
+for pol in policies:
+    sub = df[df["policy"] == pol].sort_values("offered_interval_ns")
+    axs[1, 0].plot(1.0 / sub["offered_interval_ns"], sub["p95_lat_ns"], marker='^', label=pol, color=colors[pol])
+axs[1, 0].set_title("System-Wide P95 Tail Latency")
+axs[1, 0].set_xlabel("Offered Load (Packets / ns)")
+axs[1, 0].set_ylabel("P95 Latency (ns)")
+axs[1, 0].grid(True, linestyle="--", alpha=0.5)
+axs[1, 0].legend()
+
+# 4. Jain's Fairness Index
+for pol in policies:
+    sub = df[df["policy"] == pol].sort_values("offered_interval_ns")
+    axs[1, 1].plot(1.0 / sub["offered_interval_ns"], sub["fairness"], marker='d', label=pol, color=colors[pol])
+axs[1, 1].set_title("Jain's Fairness Index across Streams")
+axs[1, 1].set_xlabel("Offered Load (Packets / ns)")
+axs[1, 1].set_ylabel("Fairness Index [0 - 1.0]")
+axs[1, 1].grid(True, linestyle="--", alpha=0.5)
+axs[1, 1].legend()
 
 plt.tight_layout()
 plt.savefig("arbitration_analysis.png", dpi=300)
-print("Arbitration analysis plot generated: arbitration_analysis.png")
+print("Updated publication plot: arbitration_analysis.png")

@@ -1,21 +1,69 @@
-# Cycle-Approximate D2D Chiplet Interconnect Performance Model
+# Cycle-Approximate Chiplet D2D Interconnect Performance Modeling Framework
 
-A SystemC TLM-2.0 cycle-approximate performance model evaluating Die-to-Die (D2D) communication bottlenecks, buffer sizing, and credit-based flow control across modular chiplet boundaries.
+A modular, cycle-approximate architectural performance model of a multi-chiplet System-on-Chip (SoC) interconnect implemented in **SystemC / TLM-2.0**.
 
-## Architecture
-- **Initiator (Chiplet 0):** Configurable packet injection rate with non-blocking retry handshaking.
-- **D2D Bridge:** Pipelined packet serialization, link propagation delay modeling, and credit tracking backpressure.
-- **Target (Chiplet 1):** Memory sink processing requests and terminating TLM transactions.
+The framework evaluates communication strategies across modular chiplet boundaries, focusing on **Head-of-Line (HOL) blocking**, **credit-based flow control**, **arbitration policies**, and **asymmetric PHY links**.
 
-## Results
-Increasing ingress buffer depth from 2 to 8 entries significantly relieves head-of-line backpressure, lowering the congestion-free threshold from 20ns to 16ns.
+---
 
-![D2D Performance Curve](d2d_performance_curve.png)
+## Architecture Topology
+
+```
+source Chiplet 0 (CPU / DMA)
+                  |
+            F2F Drd-Router
+                 /     \
+    64 GB/s PHY  ,       .   16 GB/s PHY
+               ,           .
+              v             v
+     Chiplet 1 (Memory)     Chiplet 2 (NPU)
+```
+
+---
+
+## Architectural Features
+
+1. **Explicit Credit-Based Flow Control:**
+   - Canonical non-blocking transport (`nb_transport_fw`).
+    - Dedicated credit-return channel (`nb_transport_bw`) emitting `CREDIT_RETURN` phases when downstream buffer slots are freed, preventing buffer overflow under burst loads.
+
+2. **Arbitration & HOL Blocking Exploration:**
+    - **FIFO:** Single shared ingress queue; models severe Head-of-Line blocking when packets destined for the slower NPU block subsequent memory transactions.
+    - **Round-Robin (RR):** Segregated queues per stream, ensuring fair channel allocation.
+    - **Strict-Priority (PRIO):** Priority scheduler granting immediate preemption to latency-critical CPU traffic over bulk DMA streams.
+
+3. **Heterogeneous Physical Layer (PHY):**
+    - Analytical packet serialization latency (Tjer = Packet Size / Bandwidth).
+    - Independent cross-die propagation delay.
+
+---
+
+## Experimental Results
+
+### Arbitration & Contention Analysis
+![Arbitration Analysis](arbitration_analysis.png)
+
+Under high injection rates (2.0 ns offered interval):
+- **FIFO:** Severe contention and HOL blocking push CPU latency to **72.0 ns**.
+- **Round-Robin:** Interleaved queueing brings CPU latency down to **60.76 ns**.
+- **Strict Priority:** CPU traffic preempts bulk DMA transfers, slashing CPU latency to **15.06 ns** (a **79% improvement** over FIFO).
+
+### Throughput Saturation & Link Asymmetry
+![Topology Analysis](topology_analysis.png)
+- **Memory Link (64 GB/s):** Average latency of **7.08 ns**.
+- **NPU Link (16 GB/s):** Average latency of **11.05 ns** (+56% penalty due to link serialization constraints).
+
+---
 
 ## Build & Run
+
 ```bash
 mkdir -p build && cd build
-cmake ..
+cmake .. -DSYSTEMC_PREFIX=/opt/systemc
 make -j$(nproc)
-../run_experiments.sh
-python3 ../plot_results.py
+
+cd ..
+./run_experiments.sh
+python3 plot_arbitration.py
+python3 plot_topology.py
+```

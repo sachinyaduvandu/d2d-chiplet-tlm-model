@@ -5,12 +5,19 @@
 #include <numeric>
 #include <algorithm>
 #include <map>
+#include <cmath>
 
 namespace d2d_model {
 
 enum class StreamPriority {
     HIGH = 0,
     LOW = 1
+};
+
+enum class ArbPolicy {
+    FIFO,
+    ROUND_ROBIN,
+    STRICT_PRIORITY
 };
 
 struct PacketExtension : public tlm::tlm_extension<PacketExtension> {
@@ -50,37 +57,93 @@ struct PacketExtension : public tlm::tlm_extension<PacketExtension> {
 
 DECLARE_EXTENDED_PHASE(CREDIT_RETURN);
 
-// Multi-Target Topology Stats Tracker
-class TopologyStats {
+// Unified System Performance & Fairness Metrics
+class MetricsCollector {
 public:
-    static TopologyStats& get_instance() {
-        static TopologyStats instance;
+    static MetricsCollector& get_instance() {
+        static MetricsCollector instance;
         return instance;
     }
 
-    void record_delivery(uint32_t dest_id, double latency_ns, uint64_t bytes) {
-        dest_latencies[dest_id].push_back(latency_ns);
+    void record_delivery(uint32_t stream_id, uint32_t dest_id, double latency_ns, uint64_t bytes) {
+        stream_latencies[stream_id].push_back(latency_ns);
+        all_latencies.push_back(latency_ns);
+        stream_bytes[stream_id] += bytes;
         dest_bytes[dest_id] += bytes;
     }
 
-    void reset() {
-        dest_latencies.clear();
-        dest_bytes.clear();
+    void record_starvation() { credit_starvation_events++; }
+    void record_queue_sample(size_t sz) {
+        queue_occupancy_samples.push_back(sz);
+        if (sz > max_queue_depth) max_queue_depth = sz;
     }
 
-    double get_avg_latency(uint32_t dest_id) {
-        auto& lat = dest_latencies[dest_id];
+    void reset() {
+        stream_latencies.clear();
+        all_latencies.clear();
+        stream_bytes.clear();
+        dest_bytes.clear();
+        queue_occupancy_samples.clear();
+        max_queue_depth = 0;
+        credit_starvation_events = 0;
+    }
+
+    double get_avg_latency(uint32_t stream_id) {
+        auto& lat = stream_latencies[stream_id];
         if (lat.empty()) return 0.0;
         return std::accumulate(lat.begin(), lat.end(), 0.0) / lat.size();
     }
 
-    uint64_t get_bytes(uint32_t dest_id) {
-        return dest_bytes[dest_id];
+    double get_overall_avg_latency() {
+        if (all_latencies.empty()) return 0.0;
+        return std::accumulate(all_latencies.begin(), all_latencies.end(), 0.0) / all_latencies.size();
+    }
+
+    double get_p95_latency() {
+        if (all_latencies.empty()) return 0.0;
+        std::vector<double> s = all_latencies;
+        std::sort(s.begin(), s.end());
+        return s[static_cast<size_t>(0.95 * s.size())];
+    }
+
+    uint64_t get_stream_bytes(uint32_t stream_id) { return stream_bytes[stream_id]; }
+    uint64_t get_total_bytes() {
+        uint64_t total = 0;
+        for (auto& kv : stream_bytes) total += kv.second;
+        return total;
+    }
+
+    double get_avg_queue_occupancy() {
+        if (queue_occupancy_samples.empty()) return 0.0;
+        double sum = std::accumulate(queue_occupancy_samples.begin(), queue_occupancy_samples.end(), 0.0);
+        return sum / queue_occupancy_samples.size();
+    }
+
+    size_t get_max_queue_occupancy() const { return max_queue_depth; }
+    uint64_t get_starvation_events() const { return credit_starvation_events; }
+
+    // Jain's Fairness Index across stream throughputs
+    double get_jains_fairness() {
+        if (stream_bytes.size() < 2) return 1.0;
+        double sum = 0.0;
+        double sum_sq = 0.0;
+        for (auto& kv : stream_bytes) {
+            double x = static_cast<double>(kv.second);
+            sum += x;
+            sum_sq += (x * x);
+        }
+        if (sum_sq == 0.0) return 1.0;
+        return (sum * sum) / (stream_bytes.size() * sum_sq);
     }
 
 private:
-    std::map<uint32_t, std::vector<double>> dest_latencies;
+    std::map<uint32_t, std::vector<double>> stream_latencies;
+    std::vector<double> all_latencies;
+    std::map<uint32_t, uint64_t> stream_bytes;
     std::map<uint32_t, uint64_t> dest_bytes;
+    std::vector<size_t> queue_occupancy_samples;
+    size_t max_queue_depth = 0;
+    uint64_t credit_starvation_events = 0;
 };
 
 } // namespace d2d_model

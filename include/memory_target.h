@@ -58,9 +58,9 @@ public:
                 trans->get_extension(ext);
                 if (ext) {
                     sc_core::sc_time total_lat = sc_core::sc_time_stamp() - ext->inject_time;
-                    TopologyStats::get_instance().record_delivery(m_chiplet_id, 
-                                                                  total_lat.to_double() / 1000.0, 
-                                                                  ext->payload_bytes);
+                    double lat_ns = total_lat.to_seconds() * 1e9;
+                    MetricsCollector::get_instance().record_delivery(
+                        ext->src_stream_id, m_chiplet_id, lat_ns, ext->payload_bytes);
                 }
 
                 m_free_slots++;
